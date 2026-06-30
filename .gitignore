@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.log
+backups/
+data/audit.jsonl
+test/.pgdata/
+*.tmp

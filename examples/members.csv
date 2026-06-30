@@ -1,0 +1,3 @@
+email,password,name,org_id,role
+alice@example.com,,Alice Example,REPLACE-WITH-ORG-ID,ADMIN
+bob@example.com,,Bob Example,REPLACE-WITH-ORG-ID,USER

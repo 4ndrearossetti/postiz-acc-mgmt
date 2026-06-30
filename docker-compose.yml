@@ -1,0 +1,40 @@
+# Postiz Admin Console — runs as another service on the SAME Docker network as
+# Postiz, reaching postiz-postgres:5432 directly.
+#
+# SAFETY: by default the console is published ONLY on the host loopback
+# (127.0.0.1). Never bind it to a public interface. Reach it via an SSH tunnel:
+#     ssh -L 8080:127.0.0.1:8080 your-server
+services:
+  admin-console:
+    build: .
+    image: postiz-admin-console:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # These default to the Postiz Postgres container on the shared network.
+      PGHOST: ${PGHOST:-postiz-postgres}
+      PGPORT: ${PGPORT:-5432}
+      APP_PORT: ${APP_PORT:-8080}
+      APP_HOST: 0.0.0.0
+      AUDIT_LOG: /app/data/audit.jsonl
+      BACKUP_DIR: /app/backups
+      INSECURE_COOKIES: ${INSECURE_COOKIES:-true}
+    ports:
+      # host-loopback only. Change the left side, never expose 0.0.0.0.
+      - "127.0.0.1:${APP_PORT:-8080}:${APP_PORT:-8080}"
+    volumes:
+      - audit:/app/data
+      - backups:/app/backups
+    networks:
+      - postiz
+
+volumes:
+  audit:
+  backups:
+
+# Join the EXISTING Postiz network (created by the Postiz compose project).
+# Find its name with `docker network ls` and set POSTIZ_NETWORK in .env.
+networks:
+  postiz:
+    external: true
+    name: ${POSTIZ_NETWORK:-postiz_default}

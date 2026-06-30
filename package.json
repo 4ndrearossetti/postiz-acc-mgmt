@@ -1,0 +1,31 @@
+{
+  "name": "postiz-admin-console",
+  "version": "1.0.0",
+  "description": "Internal admin console for a self-hosted Postiz instance (manages Users/Workspaces directly in Postgres).",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts",
+    "test": "ts-node test/run.ts",
+    "test:db:up": "bash scripts/test-db.sh up",
+    "test:db:down": "bash scripts/test-db.sh down"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^9.4.0",
+    "@fastify/formbody": "^7.4.0",
+    "@fastify/multipart": "^8.3.0",
+    "bcryptjs": "^2.4.3",
+    "fastify": "^4.28.1",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.5.0",
+    "@types/pg": "^8.11.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  }
+}
