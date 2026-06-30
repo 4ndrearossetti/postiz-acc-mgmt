@@ -11,6 +11,9 @@ conventions (bcrypt cost 10, `LOCAL` provider, the `ON CONFLICT` upserts, etc.).
 > login, **never public**. Every destructive action is **preview → backup →
 > confirm**, and a `pg_dump` runs automatically before any delete.
 
+> 👉 **New here? Start with the [Setup guide (SETUP.md)](./SETUP.md)** — a
+> step-by-step from zero to a running console (Docker deploy *and* local dev).
+
 ---
 
 ## What it does
