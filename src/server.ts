@@ -6,10 +6,11 @@ import multipart from '@fastify/multipart';
 import { loadConfig } from './config';
 import { initPool } from './db';
 import { initAudit, audit, readAudit } from './audit';
-import { initAuth, checkLogin, setSession, clearSession, isAuthed, adminName } from './auth';
+import { initAuth, checkLogin, setSession, clearSession, isAuthed, adminName, loginLockMs, noteLogin } from './auth';
 import {
   listWorkspaces, listAccounts, healthChecks, listOrganizationsForSelect,
   organizationExists, workspaceDeletePreflight, accountDeletePreflight,
+  deleteTargetLabels, labelsMatch,
 } from './health';
 import {
   addMembersToWorkspace, createWorkspaceWithOwner, createAndPopulate,
@@ -45,7 +46,10 @@ function page(title: string, body: string, active?: string) {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function credentialsCsv(rows: { workspace: string; name: string; email: string; password: string }[]): string {
-  const q = (s: string) => `"${String(s).replace(/"/g, '""')}"`;
+  // Neutralise spreadsheet formula injection: a field starting with = + - @
+  // tab or CR is prefixed with a single quote so Excel/Sheets won't execute it.
+  const sanitize = (s: string) => (/^[=+\-@\t\r]/.test(String(s)) ? `'${s}` : String(s));
+  const q = (s: string) => `"${sanitize(s).replace(/"/g, '""')}"`;
   const head = 'workspace,name,email,password';
   const body = rows.map((r) => [r.workspace, r.name, r.email, r.password].map(q).join(',')).join('\n');
   return `${head}\n${body}\n`;
@@ -69,11 +73,19 @@ app.get('/login', async (req, reply) => {
 });
 app.post('/login', async (req, reply) => {
   const { username = '', password = '' } = (req.body || {}) as Record<string, string>;
+  const lock = loginLockMs(req.ip);
+  if (lock > 0) {
+    audit({ admin: username || '?', action: 'login', ok: false, error: 'rate-limited' });
+    reply.code(429).type('text/html').send(loginPage(`Too many attempts. Try again in ${Math.ceil(lock / 1000)}s.`));
+    return;
+  }
   if (checkLogin(username, password)) {
+    noteLogin(req.ip, true);
     setSession(reply);
     audit({ admin: username, action: 'login', ok: true });
     return reply.redirect('/');
   }
+  noteLogin(req.ip, false);
   audit({ admin: username || '?', action: 'login', ok: false, error: 'bad credentials' });
   reply.code(401).type('text/html').send(loginPage('Invalid username or password.'));
 });
@@ -421,10 +433,9 @@ app.post('/delete/preview', async (req, reply) => {
     `<tr><td>${esc(s.kind)}</td><td>${esc(s.table)}${s.column ? '.' + esc(s.column) : ''}</td><td>${s.rows}</td></tr>`).join('');
   const lastSa = acPf.losingLastSuperadmin;
   const tok = mint({ orgIds, userIds, cascade });
-  const names = [
-    ...wsPf.roster.filter((r, i, a) => a.findIndex((x) => x.org_id === r.org_id) === i).map((r) => r.org_name),
-    ...acPf.memberships.filter((r, i, a) => a.findIndex((x) => x.user_id === r.user_id) === i).map((r) => r.email),
-  ];
+  // One label per target id (from Organization/User directly) so empty-shell
+  // workspaces are confirmable and duplicate names must each be typed.
+  const names = await deleteTargetLabels(orgIds, userIds);
   const html = `
   ${lastSa.length ? `<div class="warnbox">⚠ These workspaces would lose their <strong>last SUPERADMIN</strong>: ${lastSa.map((s) => esc(s.name)).join(', ')}. Proceeding leaves them unadministrable.</div>` : ''}
   ${cascade && dry.cascadedUserIds.length ? `<div class="warnbox">Cascade will additionally delete ${dry.cascadedUserIds.length} now-orphaned account(s).</div>` : ''}
@@ -437,8 +448,10 @@ app.post('/delete/preview', async (req, reply) => {
     <table><tr><th>Op</th><th>Table</th><th>Rows</th></tr>${planRows}</table>
     <p><strong>Total rows: ${dry.totalRows}</strong></p></div>
   <form method="post" action="/delete/confirm"><input type="hidden" name="token" value="${tok}">
-    <div class="warnbox">Type the exact name(s)/email(s) to confirm: <span class="mono">${names.map(esc).join(' , ')}</span>
-    <label>Confirmation</label><input name="confirm" placeholder="${esc(names.join(' , '))}" autocomplete="off">
+    <div class="warnbox">Type the exact workspace name(s) / account email(s) to confirm — <strong>one per line</strong>${names.length > new Set(names).size ? ' (a duplicated name must be typed once for each workspace)' : ''}:
+    <ul class="mono">${names.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
+    <label>Confirmation (${names.length} line${names.length === 1 ? '' : 's'})</label>
+    <textarea name="confirm" rows="${Math.max(2, names.length)}" autocomplete="off" placeholder="${esc(names.join('\n'))}"></textarea>
     <div style="margin-top:10px"><button class="btn danger">Backup &amp; delete</button> <a class="btn ghost" href="/delete">cancel</a></div></div>
   </form>`;
   reply.type('text/html').send(page('Confirm deletion', html, '/delete'));
@@ -450,20 +463,14 @@ app.post('/delete/confirm', async (req, reply) => {
   if (!c.ok) { reply.code(409).type('text/html').send(page('Expired', '<div class="warnbox">Preview expired — start the deletion again. <a href="/delete">back</a></div>')); return; }
   const meta = c.meta as { orgIds: string[]; userIds: string[]; cascade: boolean };
 
-  // Re-derive the expected confirmation names and require an exact-set match.
-  const [wsPf, acPf] = await Promise.all([
-    meta.orgIds.length ? workspaceDeletePreflight(meta.orgIds) : Promise.resolve({ roster: [], wouldOrphan: [] }),
-    meta.userIds.length ? accountDeletePreflight(meta.userIds) : Promise.resolve({ memberships: [], losingLastSuperadmin: [] }),
-  ]);
-  const expected = new Set<string>([
-    ...wsPf.roster.map((r) => r.org_name),
-    ...acPf.memberships.map((r) => r.email),
-  ]);
-  const typed = new Set((body.confirm || '').split(',').map((s) => s.trim()).filter(Boolean));
-  const match = expected.size > 0 && [...expected].every((e) => typed.has(e)) && [...typed].every((t) => expected.has(t));
-  if (!match) {
+  // Re-derive the expected labels from the target IDS (one per id, includes
+  // empty-shell workspaces) and require an exact MULTISET match (so duplicate
+  // names must each be typed). One label per line; commas in names are safe.
+  const expected = await deleteTargetLabels(meta.orgIds, meta.userIds);
+  const typed = (body.confirm || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (!labelsMatch(expected, typed)) {
     audit({ admin: adminName(), action: 'delete', targets: meta, ok: false, error: 'confirmation mismatch' });
-    reply.code(400).type('text/html').send(page('Confirmation failed', `<div class="warnbox">Typed names did not match. Nothing was deleted. Expected: <span class="mono">${[...expected].map(esc).join(' , ')}</span></div><p><a href="/delete">try again</a></p>`));
+    reply.code(400).type('text/html').send(page('Confirmation failed', `<div class="warnbox">Typed names did not match (need exactly one line per target). Nothing was deleted. Expected:<ul class="mono">${expected.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div><p><a href="/delete">try again</a></p>`));
     return;
   }
 

@@ -218,6 +218,23 @@ export function buildDeletePlan(edges: FkEdge[]): DeletePlan {
       sql: `UPDATE ${quoteIdent(b.table)} SET ${quoteIdent(b.column)} = NULL WHERE ${predicate(b.table)} AND ${quoteIdent(b.column)} IS NOT NULL`,
     });
   }
+
+  // Self-references (e.g. Post.parentPostId): a single scoped DELETE removes
+  // in-scope parent+child rows together, but a row OUTSIDE the scope whose
+  // self-ref points AT an in-scope row would RESTRICT-block the delete. NULL
+  // such pointers first (nullable self-ref columns only).
+  for (const e of edges) {
+    if (e.childTable !== e.parentTable || !subgraph.has(e.childTable) || !e.childColNullable) continue;
+    const col = quoteIdent(e.childCols[0]);
+    const pcol = quoteIdent(e.parentCols[0]);
+    steps.push({
+      kind: 'update-null',
+      table: e.childTable,
+      column: e.childCols[0],
+      sql: `UPDATE ${quoteIdent(e.childTable)} SET ${col} = NULL WHERE ${col} IN (SELECT ${pcol} FROM ${quoteIdent(e.childTable)} WHERE ${predicate(e.childTable)})`,
+    });
+  }
+
   for (const table of order) {
     steps.push({ kind: 'delete', table, sql: `DELETE FROM ${quoteIdent(table)} WHERE ${predicate(table)}` });
   }

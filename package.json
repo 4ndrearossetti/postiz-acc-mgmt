@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
-    "test": "ts-node test/run.ts",
+    "test": "bash scripts/test-db.sh up && ts-node test/run.ts && bash scripts/test-db.sh up && ts-node test/extra.ts && bash scripts/test-db.sh up && ts-node test/regressions.ts",
     "test:db:up": "bash scripts/test-db.sh up",
     "test:db:down": "bash scripts/test-db.sh down"
   },

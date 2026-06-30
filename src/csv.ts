@@ -9,7 +9,8 @@ export function parseCsv(text: string): Record<string, string>[] {
   let row: string[] = [];
   let i = 0;
   let inQuotes = false;
-  const s = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // Strip a leading UTF-8 BOM so the first header key isn't "﻿email".
+  const s = text.replace(/^﻿/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   while (i < s.length) {
     const ch = s[i];
     if (inQuotes) {

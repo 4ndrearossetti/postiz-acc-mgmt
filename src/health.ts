@@ -127,12 +127,17 @@ export async function workspaceDeletePreflight(orgIds: string[]) {
       ORDER BY o.name, u.email`,
     [orgIds],
   );
+  // Members of the deleted set with NO membership in any surviving workspace.
   const orphaning = await pool.query(
     `SELECT DISTINCT u.email, u.id
        FROM "UserOrganization" uo
        JOIN "User" u ON u.id = uo."userId"
       WHERE uo."organizationId" = ANY($1::text[])
-        AND (SELECT count(*) FROM "UserOrganization" x WHERE x."userId" = uo."userId") = 1
+        AND NOT EXISTS (
+          SELECT 1 FROM "UserOrganization" x
+           WHERE x."userId" = uo."userId"
+             AND x."organizationId" <> ALL($1::text[])
+        )
       ORDER BY u.email`,
     [orgIds],
   );
@@ -175,6 +180,34 @@ export async function listOrganizationsForSelect() {
        FROM "Organization" o ORDER BY o.name, o.id`,
   );
   return rows as { id: string; name: string; members: number }[];
+}
+
+// Confirmation labels derived from the target IDS directly (NOT from
+// membership joins) so empty-shell workspaces are confirmable, and returned as
+// a LIST (one per id) so duplicate workspace names must each be typed.
+export async function deleteTargetLabels(orgIds: string[], userIds: string[]): Promise<string[]> {
+  const pool = getPool();
+  const labels: string[] = [];
+  if (orgIds.length) {
+    const { rows } = await pool.query(`SELECT id, name FROM "Organization" WHERE id = ANY($1::text[])`, [orgIds]);
+    const byId = new Map(rows.map((r) => [r.id, r.name as string]));
+    for (const id of orgIds) if (byId.has(id)) labels.push(byId.get(id)!);
+  }
+  if (userIds.length) {
+    const { rows } = await pool.query(`SELECT id, email FROM "User" WHERE id = ANY($1::text[])`, [userIds]);
+    const byId = new Map(rows.map((r) => [r.id, r.email as string]));
+    for (const id of userIds) if (byId.has(id)) labels.push(byId.get(id)!);
+  }
+  return labels;
+}
+
+// Compare two label lists as MULTISETS (order-independent, count-sensitive).
+export function labelsMatch(expected: string[], typed: string[]): boolean {
+  if (expected.length === 0 || expected.length !== typed.length) return false;
+  const norm = (a: string[]) => a.map((s) => s.trim()).sort();
+  const e = norm(expected);
+  const t = norm(typed);
+  return e.every((v, i) => v === t[i]);
 }
 
 export async function organizationExists(id: string): Promise<boolean> {

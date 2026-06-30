@@ -33,7 +33,11 @@ export interface DeleteResult {
   rootsLeft: { orgs: number; users: number };
 }
 
-// Accounts whose SOLE membership is in one of orgIds (never shared accounts).
+// Accounts that would be left with ZERO memberships once orgIds are deleted —
+// i.e. members of the deleted set with NO membership in any surviving
+// workspace. This correctly excludes genuinely shared accounts (which keep a
+// membership elsewhere) AND catches a user who belonged only to several of the
+// deleted orgs (a naive "exactly one membership" test would wrongly skip them).
 export async function computeOrphanCascade(
   client: PoolClient,
   orgIds: string[],
@@ -43,7 +47,11 @@ export async function computeOrphanCascade(
     `SELECT DISTINCT uo."userId" AS id
        FROM "UserOrganization" uo
       WHERE uo."organizationId" = ANY($1::text[])
-        AND (SELECT count(*) FROM "UserOrganization" x WHERE x."userId" = uo."userId") = 1`,
+        AND NOT EXISTS (
+          SELECT 1 FROM "UserOrganization" x
+           WHERE x."userId" = uo."userId"
+             AND x."organizationId" <> ALL($1::text[])
+        )`,
     [orgIds],
   );
   return rows.map((r) => r.id);
@@ -53,6 +61,8 @@ export async function runDelete(req: DeleteRequest): Promise<DeleteResult> {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    // Don't let the single teardown connection block forever on a row lock.
+    await client.query("SET LOCAL lock_timeout = '30s'");
 
     let userIds = [...new Set(req.userIds)];
     let cascadedUserIds: string[] = [];

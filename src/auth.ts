@@ -21,6 +21,28 @@ export function initAuth(cfg: Config) {
   }
 }
 
+// ── login throttling (single operator; in-memory per source IP) ──────────────
+const attempts = new Map<string, { fails: number; until: number }>();
+const MAX_FREE = 5; // failures before lockout kicks in
+
+export function loginLockMs(ip: string): number {
+  const a = attempts.get(ip);
+  if (!a) return 0;
+  return Math.max(0, a.until - Date.now());
+}
+
+export function noteLogin(ip: string, ok: boolean): void {
+  if (ok) { attempts.delete(ip); return; }
+  const a = attempts.get(ip) || { fails: 0, until: 0 };
+  a.fails += 1;
+  if (a.fails >= MAX_FREE) {
+    // Exponential backoff, capped at 15 minutes.
+    const ms = Math.min(15 * 60 * 1000, 1000 * Math.pow(2, a.fails - MAX_FREE) * 30);
+    a.until = Date.now() + ms;
+  }
+  attempts.set(ip, a);
+}
+
 export function checkLogin(username: string, password: string): boolean {
   // Constant-ish: always run bcrypt to avoid trivial user-enumeration timing.
   const userOk = username === adminUser;

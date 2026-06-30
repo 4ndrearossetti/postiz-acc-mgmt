@@ -105,15 +105,20 @@ live DB**) backs the smoke test.
 
 ```bash
 npm install
-npm run test:db:up     # initdb + start a local PG on 127.0.0.1:55432, load test/schema.sql
-npm test               # FK-walker unit checks + end-to-end smoke test
-npm run test:db:down   # stop it
+npm test               # resets the throwaway DB and runs all three suites
+npm run test:db:down   # stop the local PG when done
 ```
 
-The smoke test (SPEC Sec 8): creates a workspace + members, runs a dry-run,
-performs a real delete (with backup), and asserts all four health checks come
-back clean. It also verifies the walker breaks the `Orders↔MessagesGroup` cycle
-and that the orphan-cascade never touches a shared account.
+`npm test` runs, each against a freshly-reset throwaway DB:
+- **test/run.ts** — SPEC Sec 8 smoke test: hashing, the FK walker (valid
+  children-first order, cycle break, self-ref), creation/idempotency, health,
+  dry-run rollback, real delete + verified backup, orphan cascade.
+- **test/extra.ts** — adversarial cases: single shared-account delete (B.5),
+  last-SUPERADMIN guard, CSV dry-run classification + parsing, idempotency,
+  duplicate workspace names.
+- **test/regressions.ts** — the bugs caught in multi-agent review: confirmation
+  gate (empty-shell / duplicate-name / commas), multi-org orphan cascade, and
+  cross-scope self-reference teardown.
 
 Run the app against the test DB:
 
@@ -127,13 +132,42 @@ node dist/server.js
 
 ## Restoring from a backup
 
-Backups are plain `pg_dump` SQL in `BACKUP_DIR`. To restore the Postiz DB:
+Backups are plain `pg_dump` SQL in `BACKUP_DIR`. The hostname `postiz-postgres`
+only resolves **inside the Docker network**, so restore from a container on that
+network (or `docker exec` into the Postgres container):
 
 ```bash
+# from a host that can reach the DB container:
+docker exec -i postiz-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  < postiz-backup-YYYY-MM-DD-HHMMSS.sql
+
+# or, from any service on the postiz network:
 psql -h postiz-postgres -U "$PGUSER" -d "$PGDATABASE" -f postiz-backup-YYYY-MM-DD-HHMMSS.sql
 ```
 
 (Restore into an empty/clean database; the dump uses `--no-owner --no-privileges`.)
+Before any delete, the console verifies the dump is non-empty **and** carries
+`pg_dump`'s completion marker, so a truncated/partial backup is rejected rather
+than mistaken for success.
+
+## Known behaviors (by design)
+
+- **Cross-workspace post submissions.** A `Post` carrying a
+  `submittedForOrganizationId` pointing at a *deleted* workspace is removed with
+  that workspace — this mirrors Postiz's own teardown (Appendix B.4). The exact
+  row count is shown in the dry-run preview before you confirm, and the backup
+  is taken first.
+- **Self-references** (`Post.parentPostId`) and the `Orders↔MessagesGroup`
+  **cycle** are handled by NULL-ing the offending nullable FK on out-of-scope
+  rows before the delete, so a cross-scope reference can't RESTRICT-block (or
+  silently roll back) a teardown.
+- **Account deletion does not block on the last SUPERADMIN.** Role *changes* and
+  member *removal* enforce the last-SUPERADMIN guard; deleting an account is a
+  bespoke teardown whose orphan/last-admin risk is surfaced in the pre-flight
+  and re-checked by the post-delete health panel (SPEC 4.5 / Sec 7).
+- **Hardening from review:** the login is rate-limited (per-IP exponential
+  backoff), the downloadable credentials sheet neutralises spreadsheet formula
+  injection, and a UTF-8 BOM on an uploaded CSV is stripped.
 
 ## Notes on Postiz compatibility
 
