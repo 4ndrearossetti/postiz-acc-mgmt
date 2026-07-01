@@ -81,18 +81,37 @@ Edit `.env` and set, at minimum:
 Leave `AUDIT_LOG`, `BACKUP_DIR`, `APP_PORT`, and `INSECURE_COOKIES=true` at their
 defaults unless you have a reason to change them.
 
+> ⚠️ **Avoid `$` in any `.env` value** (`PGPASSWORD`, `SESSION_SECRET`,
+> `ADMIN_PASSWORD`, and especially `ADMIN_PASSWORD_HASH`). Docker Compose runs
+> variable substitution over `.env`, so a `$word` inside a value is treated as
+> a `$variable`, comes up empty, and **silently corrupts the value** — you'll
+> see `WARN The "…" variable is not set. Defaulting to a blank string.` Use
+> `$`-free secrets (`openssl rand -hex 32` is hex, so it's safe), or escape
+> every `$` as `$$`. See [Troubleshooting](#troubleshooting).
+
 ### 5. Set the admin password
 
-Preferred — store a **hash**, not a plaintext password. Build once and generate:
+> Note: a bcrypt hash is **full of `$`** (`$2b$10$…`), which triggers exactly
+> the corruption warned about above. So either use `ADMIN_PASSWORD` (simplest),
+> or escape the hash's `$` as `$$` in `.env`.
+
+Simplest — set a plaintext password (pick one **without `$` characters**); it's
+hashed in memory at boot:
+
+```bash
+ADMIN_PASSWORD=your-strong-password    # in .env; leave ADMIN_PASSWORD_HASH blank
+```
+
+Or store a **hash** instead. Build once, generate it, then **escape each `$`
+as `$$`** when you paste it into `.env`:
 
 ```bash
 npm install && npm run build
 node dist/tools/hashpw.js 'your-strong-password'
-# → $2b$10$....  copy this into ADMIN_PASSWORD_HASH in .env
+# → $2b$10$....   in .env write it as:  ADMIN_PASSWORD_HASH=$$2b$$10$$....
 ```
 
-Or, for a quick start, just set `ADMIN_PASSWORD=your-strong-password` in `.env`
-(it's hashed in memory at boot). Set only one of the two.
+Set only one of the two.
 
 ### 6. Build and start
 
@@ -183,6 +202,9 @@ Every setting is env-only (see `.env.example`):
 
 | Symptom | Likely cause / fix |
 |---------|--------------------|
+| `WARN The "…" variable is not set. Defaulting to a blank string.` | A `.env` value contains a `$` (very common with a bcrypt `ADMIN_PASSWORD_HASH`, or a `$` in `PGPASSWORD`/`SESSION_SECRET`). Docker Compose reads `$word` as a variable and blanks it — **corrupting the secret**. Fix: use `$`-free values (`openssl rand -hex 32`; a password without `$`; or `ADMIN_PASSWORD` instead of the hash), or escape every `$` as `$$`. |
+| `Bind for 0.0.0.0:8080 failed: port is already allocated` | Port `8080` is in use (often Postiz's own frontend). Set `APP_PORT=8484` (or any free port) in `.env` — it maps both host and container sides — then `docker compose up -d`. Check it's free first with `ss -ltnp \| grep 8484`. |
+| Login page rejects the right password (and you saw the `$` WARN above) | Your `ADMIN_PASSWORD_HASH` was corrupted by `$` interpolation — see the first row. |
 | Container exits immediately, log says `Missing required env var` | A required value isn't set in `.env` (e.g. `SESSION_SECRET`, DB creds, or neither `ADMIN_PASSWORD_HASH` nor `ADMIN_PASSWORD`). |
 | `getaddrinfo ENOTFOUND postiz-postgres` | The console didn't join Postiz's network. Check `POSTIZ_NETWORK` matches step 2 and that the network is `external`. |
 | `password authentication failed` / `database "..." does not exist` | `PGUSER` / `PGPASSWORD` / `PGDATABASE` don't match the values from step 3. |
